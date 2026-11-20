@@ -176,4 +176,133 @@ def read_headers(path: str) -> dict:
                 return read_aiff(f)
         except HeaderError:
             pass
+    elif low.endswith(".sd2"):                          # data fork = raw PCM, format in the resource fork
+        import os
+        info = read_unknown(path, os.path.getsize(path))
+        if info:
+            return info
+        raise HeaderError("Sound Designer II without its resource fork")
     return ffprobe(path)
+
+
+# --- Files without a usable extension (classic Mac OS era) -----------------------------------
+# Split-mono channel suffixes of Pro Tools / Sound Designer II sessions ("Door 3.L", "Amb.R").
+CHANNEL_SUFFIX = {".l", ".r", ".c", ".ls", ".rs", ".lfe", ".s", ".m", ".lc", ".rc", ".cs",
+                  ".p1", ".p2", ".p3", ".p4", ".p5", ".p6", ".p7", ".p8", ".w", ".x", ".y", ".z"}
+
+
+def sniff(head: bytes) -> str | None:
+    """Audio container from the first bytes, whatever the name says."""
+    if len(head) >= 12 and head[:4] in (b"RIFF", b"RF64", b"BW64") and head[8:12] == b"WAVE":
+        return "wav"
+    if len(head) >= 12 and head[:4] == b"FORM" and head[8:12] in (b"AIFF", b"AIFC"):
+        return "aiff"
+    if head[:4] == b"fLaC":
+        return "flac"
+    if head[:4] == b"OggS":
+        return "ogg"
+    if head[:4] == b"caff":
+        return "caf"
+    if head[:4] == b".snd":
+        return "au"
+    if head[:3] == b"ID3" or (len(head) >= 2 and head[0] == 0xFF and head[1] & 0xE0 == 0xE0):
+        return "mp3"
+    return None
+
+
+APPLEDOUBLE_MAGIC = 0x00051607
+
+
+def resource_fork(appledouble: bytes) -> bytes | None:
+    """The resource fork stored in an AppleDouble file (entry id 2), or None."""
+    if len(appledouble) < 26 or struct.unpack(">I", appledouble[:4])[0] != APPLEDOUBLE_MAGIC:
+        return None
+    n = struct.unpack(">H", appledouble[24:26])[0]
+    for i in range(n):
+        off = 26 + 12 * i
+        if off + 12 > len(appledouble):
+            break
+        eid, start, length = struct.unpack(">III", appledouble[off:off + 12])
+        if eid == 2 and length:
+            return appledouble[start:start + length]
+    return None
+
+
+def sd2_from_resources(fork: bytes) -> dict:
+    """Sound Designer II keeps its format in 'STR ' resources named sample-rate, sample-size
+    and channels (values as text, e.g. '48000.000'). Returns what it finds."""
+    if len(fork) < 16:
+        return {}
+    data_off, map_off = struct.unpack(">II", fork[:8])
+    if map_off + 30 > len(fork):
+        return {}
+    types_off = map_off + struct.unpack(">H", fork[map_off + 24:map_off + 26])[0]
+    names_off = map_off + struct.unpack(">H", fork[map_off + 26:map_off + 28])[0]
+    n_types = struct.unpack(">H", fork[types_off:types_off + 2])[0] + 1
+    found = {}
+    for t in range(n_types):
+        e = types_off + 2 + 8 * t
+        rtype, count, ref_off = fork[e:e + 4], struct.unpack(">H", fork[e + 4:e + 6])[0] + 1, struct.unpack(">H", fork[e + 6:e + 8])[0]
+        if rtype != b"STR ":
+            continue
+        for r in range(count):
+            ref = types_off + ref_off + 12 * r
+            name_rel = struct.unpack(">H", fork[ref + 2:ref + 4])[0]
+            doff = int.from_bytes(fork[ref + 5:ref + 8], "big")
+            if name_rel == 0xFFFF:
+                continue
+            nl = fork[names_off + name_rel]
+            name = fork[names_off + name_rel + 1:names_off + name_rel + 1 + nl].decode("latin-1")
+            d = data_off + doff
+            ln = struct.unpack(">I", fork[d:d + 4])[0]
+            raw = fork[d + 4:d + 4 + ln]
+            value = raw[1:1 + raw[0]].decode("latin-1") if raw else ""
+            found[name.lower()] = value.strip()
+    out = {}
+    try:
+        if "sample-rate" in found:
+            out["sample_rate"] = int(round(float(found["sample-rate"])))
+        if "sample-size" in found:
+            out["bits"] = int(found["sample-size"]) * 8
+        if "channels" in found:
+            out["channels"] = int(found["channels"])
+    except ValueError:
+        pass
+    return out
+
+
+def appledouble_path(path: str) -> str | None:
+    """Where a Mac file server keeps the resource fork of `path`, if it exists."""
+    import os
+    d, name = os.path.split(path)
+    for cand in (os.path.join(d, "._" + name), os.path.join(d, ".AppleDouble", name)):
+        if os.path.isfile(cand):
+            return cand
+    return None
+
+
+def read_unknown(path: str, size: int) -> dict | None:
+    """A file whose extension says nothing: sniff its content; else, a Sound Designer II data
+    fork (raw PCM) described by its AppleDouble resource fork. None when it is not audio."""
+    with open(path, "rb") as f:
+        head = f.read(16)
+    kind = sniff(head)
+    if kind in ("wav", "aiff"):
+        with open(path, "rb") as f:
+            return (read_wav if kind == "wav" else read_aiff)(f)
+    if kind:
+        return ffprobe(path)
+    ad = appledouble_path(path)
+    if not ad:
+        return None
+    with open(ad, "rb") as f:
+        fork = resource_fork(f.read(1 << 20))
+    fmt = sd2_from_resources(fork) if fork else {}
+    if not fmt.get("sample_rate"):
+        return None
+    info = {"container": "sd2", "codec": "pcm", **fmt}
+    bps = (fmt.get("bits") or 16) // 8 * (fmt.get("channels") or 1)
+    if bps:
+        info["frames"] = size // bps
+        info["duration_s"] = round(info["frames"] / fmt["sample_rate"], 3)
+    return info

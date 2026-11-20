@@ -131,3 +131,76 @@ def test_ffprobe_for_other_formats(tmp_path):
                     str(out)], check=True)
     info = headers.read_headers(str(out))
     assert info["codec"] == "flac" and info["sample_rate"] == 48000 and abs(info["duration_s"] - 2) < 0.05
+
+
+def resource_fork_with_strings(strings: dict) -> bytes:
+    """A minimal Mac resource fork holding 'STR ' resources (name -> value)."""
+    data = b"".join(struct.pack(">I", len(v) + 1) + bytes([len(v)]) + v.encode() for v in strings.values())
+    names = b"".join(bytes([len(k)]) + k.encode() for k in strings)
+    n = len(strings)
+    type_list = struct.pack(">H", 0) + b"STR " + struct.pack(">HH", n - 1, 2 + 8)
+    refs, doff, noff = b"", 0, 0
+    for k, v in strings.items():
+        refs += struct.pack(">hH", 1000, noff) + bytes([0]) + doff.to_bytes(3, "big") + b"\0\0\0\0"
+        doff += 4 + 1 + len(v)
+        noff += 1 + len(k)
+    map_head_len = 16 + 4 + 2 + 2 + 2 + 2
+    typelist_off = map_head_len
+    namelist_off = typelist_off + len(type_list) + len(refs)
+    data_off = 256
+    map_off = data_off + len(data)
+    rmap = b"\0" * 16 + b"\0" * 4 + b"\0\0" + b"\0\0" + struct.pack(">HH", typelist_off, namelist_off) + type_list + refs + names
+    head = struct.pack(">IIII", data_off, map_off, len(data), len(rmap))
+    return head + b"\0" * (data_off - 16) + data + rmap
+
+
+def appledouble(fork: bytes) -> bytes:
+    header = struct.pack(">II", 0x00051607, 0x00020000) + b"\0" * 16 + struct.pack(">H", 1)
+    entry_off = len(header) + 12
+    return header + struct.pack(">III", 2, entry_off, len(fork)) + fork
+
+
+def test_classic_mac_files_are_found(tmp_path):
+    root = tmp_path / "SonoCD"
+    d = root / "SONS DU MONDE" / "AK400 Pekin"
+    d.mkdir(parents=True)
+    (d / "Marche puces 8 MS").write_bytes(wav(fmt(2, 48000, 16), frames=48000, align=4))      # WAV, no extension
+    fork = appledouble(resource_fork_with_strings({"sample-rate": "44100.000", "sample-size": "2", "channels": "1"}))
+    for ch in ("L", "R"):                                                                      # SD2 split mono
+        (d / f"Ecole Musique couloir.{ch}").write_bytes(b"\x01" * 44100 * 2 * 3)               # 3 s of 16-bit mono
+        (d / f"._Ecole Musique couloir.{ch}").write_bytes(fork)
+    (d / "Orphan.sd2").write_bytes(b"\x01" * 1000)                                             # resource fork lost
+    cat = str(tmp_path / "c.sqlite")
+    inventory.run([str(root)], cat)
+    db = sqlite3.connect(cat)
+    rows = {r[0].rsplit("/", 1)[1]: r[1:] for r in db.execute(
+        "SELECT relpath, kind, container, sample_rate, channels, bits, duration_s, channel_suffix, sniffed, error FROM files")}
+    assert rows["Marche puces 8 MS"][:3] == ("audio", "wav", 48000) and rows["Marche puces 8 MS"][7] == 1
+    assert rows["Ecole Musique couloir.L"][:7] == ("audio", "sd2", 44100, 1, 16, 3.0, "L")
+    assert rows["Ecole Musique couloir.R"][6] == "R"
+    assert rows["Orphan.sd2"][0] == "audio" and "resource fork" in rows["Orphan.sd2"][8]
+    md = report.build(cat)
+    assert "Sound Designer II (format read from the resource fork): **2**" in md
+    assert "**2**, in **1** multichannel sounds" in md
+
+
+def test_unreadable_folders_are_reported(tmp_path):
+    root = tmp_path / "Share"
+    (root / "ok").mkdir(parents=True)
+    (root / "ok" / "a.wav").write_bytes(wav(fmt()))
+    locked = root / "locked"
+    locked.mkdir()
+    (locked / "b.wav").write_bytes(wav(fmt()))
+    cat = str(tmp_path / "c.sqlite")
+    inventory.run([str(root)], cat)
+    locked.chmod(0)
+    try:
+        if os.access(locked, os.R_OK):          # running as root: permissions do not apply
+            pytest.skip("cannot simulate an unreadable folder as root")
+        inventory.run([str(root)], cat)
+        db = sqlite3.connect(cat)
+        assert db.execute("SELECT path FROM walk_errors").fetchall() == [("locked",)]
+        assert db.execute("SELECT count(*) FROM files").fetchone()[0] == 2     # its files are kept, not "gone"
+        assert "| Share | locked |" in report.build(cat)
+    finally:
+        locked.chmod(0o755)

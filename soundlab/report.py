@@ -62,6 +62,20 @@ def build(catalog: str, top: int = 25) -> str:
            f"- With iXML: **{meta[1] or 0:,}** (with a scene: {meta[2] or 0:,} — production sound recorders)",
            f"- With markers / cues: **{meta[3] or 0:,}**", ""]
 
+    legacy = _rows(db, """SELECT sum(sniffed = 1), sum(container = 'sd2'), sum(channel_suffix IS NOT NULL),
+                                 count(DISTINCT CASE WHEN channel_suffix IS NOT NULL THEN root || '/' || folder || '/' ||
+                                       substr(relpath, 1, length(relpath) - length(channel_suffix) - 1) END)
+                            FROM files WHERE kind='audio'""")[0]
+    md += ["## Classic Mac files", "",
+           f"- Recognised from their content (no usable extension): **{legacy[0] or 0:,}**",
+           f"- Sound Designer II (format read from the resource fork): **{legacy[1] or 0:,}**",
+           f"- Split-mono channel files (.L, .R, .C…): **{legacy[2] or 0:,}**, in **{legacy[3] or 0:,}** multichannel sounds", ""]
+    other = _rows(db, """SELECT CASE WHEN ext = '' THEN '(none)' ELSE ext END, count(*), sum(size)
+                           FROM files WHERE kind='other' GROUP BY 1 ORDER BY 3 DESC LIMIT 12""")
+    if other:
+        md += ["## Other files (not audio, video or session; by size)", ""]
+        md += _table(["Extension", "Files", "GB"], [(r[0], f"{r[1]:,}", f"{(r[2] or 0) / GB:,.1f}") for r in other])
+
     md += ["## Sessions and exchange files (examples for spotting, phase 4)", ""]
     md += _table(["Extension", "Files", "Shares"],
                  [(r[0], f"{r[1]:,}", r[2]) for r in _rows(db, """SELECT ext, count(*), group_concat(DISTINCT root) FROM files
@@ -85,6 +99,10 @@ def build(catalog: str, top: int = 25) -> str:
                                                count(*), sum(duration_s), sum(size)
                                           FROM files WHERE kind='audio' GROUP BY 1, 2 ORDER BY 4 DESC LIMIT ?""", (top,))])
 
+    walk_err = _rows(db, "SELECT root, path, error FROM walk_errors ORDER BY root, path LIMIT 50")
+    if walk_err:
+        md += ["## Folders and files that could not be reached (fix on the NAS, e.g. rename)", ""]
+        md += _table(["Share", "Path", "Reason"], walk_err)
     err = _rows(db, "SELECT substr(error, 1, 60), count(*) FROM files WHERE error IS NOT NULL GROUP BY 1 ORDER BY 2 DESC LIMIT 10")
     if err:
         md += ["## Unreadable files (by reason)", ""] + _table(["Reason", "Files"], [(r[0], f"{r[1]:,}") for r in err])
