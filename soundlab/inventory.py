@@ -37,6 +37,13 @@ NOT_AUDIO = {".txt", ".pdf", ".doc", ".docx", ".rtf", ".xls", ".xlsx", ".csv", "
              ".numbers", ".ttf", ".otf", ".dll", ".pkg", ".nfo", ".md", ".json", ".srt", ".pfl", ".wfm", ".pk", ".peak",
              ".reapeaks", ".asd", ".pkf", ".ovw", ".sfk", ".mrk", ".dat"}
 QUICK = 65536
+# Names written by an AFP server (netatalk) encode some characters as ':' + hex: ':2e' is a
+# leading '.', so ':2eDS_Store' is a hidden '.DS_Store'.
+AFP_DOT = ":2e"
+
+
+def _hidden(name: str) -> bool:
+    return name.startswith(".") or name.lower().startswith(AFP_DOT)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS files (
@@ -107,10 +114,12 @@ def walk(root: str, errors: list | None = None):
             name = e.name
             try:
                 if e.is_dir(follow_symlinks=False):
-                    if name.lower() not in SKIP_DIRS and not name.startswith("."):
+                    if name.lower() not in SKIP_DIRS and not _hidden(name):
                         stack.append(e.path)
                 elif e.is_file(follow_symlinks=False):
-                    if name.lower() in SKIP_FILES or name.startswith("._"):
+                    low = name.lower()
+                    if low in SKIP_FILES or name.startswith("._") or (low.startswith(AFP_DOT) and
+                                                                     "." + low[3:] in SKIP_FILES):
                         continue
                     st = e.stat(follow_symlinks=False)
                     yield os.path.relpath(e.path, root), st.st_size, st.st_mtime

@@ -217,3 +217,12 @@ def test_out_of_range_header_value_does_not_stop_the_run(tmp_path, monkeypatch):
     inventory.run([str(root)], catalog, workers=1)
     rows = sqlite3.connect(catalog).execute("SELECT relpath, frames, channels FROM files ORDER BY 1").fetchall()
     assert rows == [("a.wav", None, 2), ("b.wav", None, 2)]
+
+
+def test_afp_encoded_hidden_names_are_skipped(tmp_path):
+    from soundlab.inventory import walk
+    (tmp_path / ":2eDS_Store").write_bytes(b"x")
+    (tmp_path / ":2eAppleDouble").mkdir()
+    (tmp_path / ":2eAppleDouble" / "a.wav").write_bytes(b"x")
+    (tmp_path / "AK401:01 TV Foot.L").write_bytes(b"x")
+    assert sorted(r for r, _, _ in walk(str(tmp_path))) == ["AK401:01 TV Foot.L"]
