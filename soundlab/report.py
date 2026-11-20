@@ -87,6 +87,15 @@ def build(catalog: str, top: int = 25) -> str:
     md += ["## Duplicates (quick fingerprint; to confirm with a full checksum)", "",
            f"- {dup[0] or 0:,} groups, {dup[1] or 0:,} extra copies, **{(dup[2] or 0) / GB:,.1f} GB** reclaimable.", ""]
 
+    if db.execute("SELECT name FROM sqlite_master WHERE name = 'checksums'").fetchone():
+        ck = _rows(db, """SELECT count(*), sum(error IS NOT NULL), (SELECT count(*) FROM files) FROM checksums""")[0]
+        full = _rows(db, """SELECT count(*), sum(n - 1), sum((n - 1) * size) FROM (
+                              SELECT blake2b, count(*) AS n, max(size) AS size FROM checksums
+                               WHERE blake2b IS NOT NULL GROUP BY blake2b HAVING count(*) > 1)""")[0]
+        md += ["## Duplicates (full checksum, certain)", "",
+               f"- Hashed: {ck[0]:,} of {ck[2]:,} files ({ck[1] or 0:,} unreadable).",
+               f"- {full[0] or 0:,} groups, {full[1] or 0:,} extra copies, **{(full[2] or 0) / GB:,.1f} GB** reclaimable.", ""]
+
     md += [f"## Largest folders (audio hours, top {top}, two levels deep)", ""]
     md += _table(["Share", "Folder", "Audio files", "Hours", "GB"],
                  [(r[0], r[1] or "(root)", f"{r[2]:,}", _h(r[3]), f"{(r[4] or 0) / GB:,.1f}")

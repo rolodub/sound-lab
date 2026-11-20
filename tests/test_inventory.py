@@ -291,3 +291,13 @@ def test_pmf_found_by_the_inventory_after_reclassification(tmp_path):
     db.commit()
     inventory.run([str(root)], cat, workers=1)
     assert db.execute("SELECT kind, channels FROM files").fetchall() == [("audio", 1)]
+
+
+def test_full_checksum_confirms_duplicates_and_resumes(library, tmp_path):
+    from soundlab import checksum
+    cat = str(tmp_path / "c.sqlite")
+    inventory.run([str(library)], cat, workers=2)
+    first = checksum.run([str(library)], cat, workers=1)
+    assert first["hashed"] > 0 and first["errors"] == 0
+    assert checksum.run([str(library)], cat, workers=1)["hashed"] == 0          # resumable
+    assert "Duplicates (full checksum, certain)" in report.build(cat)

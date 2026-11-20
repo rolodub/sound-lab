@@ -1,11 +1,12 @@
 """python -m soundlab inventory --root DIR [--root DIR ...] --catalog FILE
 python -m soundlab report --catalog FILE
+python -m soundlab checksum --root DIR [--root DIR ...] --catalog FILE   (full BLAKE2b)
 python -m soundlab pmf2wav IN.pmf OUT.wav   (Pyramix media to WAV, same rate, bits and tracks)"""
 import argparse
 import logging
 import sys
 
-from . import inventory, report
+from . import checksum, inventory, report
 
 
 def main(argv=None) -> int:
@@ -18,6 +19,10 @@ def main(argv=None) -> int:
     rep = sub.add_parser("report", help="Markdown report from the catalog")
     rep.add_argument("--catalog", required=True)
     rep.add_argument("--top", type=int, default=25)
+    ck = sub.add_parser("checksum", help="full-content fingerprint of every catalogued file (slow, resumable)")
+    ck.add_argument("--root", action="append", required=True)
+    ck.add_argument("--catalog", required=True)
+    ck.add_argument("--workers", type=int, default=2)
     pw = sub.add_parser("pmf2wav", help="convert a Pyramix .pmf to WAV (the original is only read)")
     pw.add_argument("src")
     pw.add_argument("dst")
@@ -26,6 +31,8 @@ def main(argv=None) -> int:
     if a.cmd == "inventory":
         totals = inventory.run(a.root, a.catalog, workers=a.workers)
         logging.info("done: %s", totals)
+    elif a.cmd == "checksum":
+        logging.info("done: %s", checksum.run(a.root, a.catalog, workers=a.workers))
     elif a.cmd == "pmf2wav":
         from .pyramix import to_wav
         info = to_wav(a.src, a.dst)
