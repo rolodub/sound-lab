@@ -4,6 +4,16 @@ Sound library analysis and film sound tools, on the home AI tower. Decision reco
 `home-infra/docs/decisions/0011-sound-lab.md`. Each phase ends with something usable and a
 measurement; nothing modifies the original files.
 
+## Architecture (decision 0011)
+
+- **infra-vm** (always on): TLS, sign-in, the web front end, and a wake-on-open gateway that
+  wakes the tower and proxies the API to it.
+- **AI tower**: API, **SQLite (WAL) database**, GPU jobs, previews and waveforms, read-only
+  NAS mounts. Sound vectors in an embedded index next to it (LanceDB or `sqlite-vec`, by
+  benchmark in phase 3).
+- Irreplaceable data (labels, validated regions, folder decisions): nightly backup to S3 and
+  a plain-file export (JSON/CSV) next to the library.
+
 ## Phase 0 — Inventory (CPU only, read-only) — *started 2026-11-20*
 
 - Mount the sound shares of the NAS **read-only** on the tower (dedicated read-only NAS account).
@@ -15,12 +25,18 @@ measurement; nothing modifies the original files.
 - Resumable: a file already inventoried with the same size and date is skipped.
 - **Report**: per share and top folders — files, TB, hours of audio, formats, sample rates,
   channel layouts, long files (rush candidates), files with embedded descriptions, duplicates.
-- Output: `catalog.sqlite` on the tower's NVMe, `inventory-report.md`.
+- Output: `catalog.sqlite` on the tower's NVMe (becomes the Sound Lab database in phase 1), `inventory-report.md`.
 - **Decides**: the size of the new NAS; the folder tree to label in phase 1.
 
 ## Phase 1 — The app, first version: library and folder labelling
 
-- Web app (React + wavesurfer.js, Python API), VPN only: browse the catalog, play previews
+- Schema: `assets`, `clips`, `labels` (with history), `folders`, `analyses`, `embeddings`,
+  `jobs`, `exports` in the SQLite database (WAL); the phase 0 catalog is imported.
+- **Backups**: the tower's Sound Lab data to S3 (restic, nightly), labels also exported as
+  plain files.
+- **Front door on infra-vm**: TLS, sign-in, static front end, wake-on-open of the tower,
+  proxy to the API on the tower.
+- Web app (React + wavesurfer.js, Python API on the tower), VPN only: browse the catalog, play previews
   (FLAC/Opus generated on the tower), waveforms precomputed (instant on hour-long files).
 - **Folder labelling**: each folder with a proposed **UCS** category (from its path, by a
   local model); Roland accepts or corrects — hundreds of decisions label tens of thousands of
@@ -48,7 +64,7 @@ measurement; nothing modifies the original files.
 
 - Audio embeddings (CLAP-type) for every clip; sound tags; short descriptions by a local
   audio-language model; label propagation from labelled folders to similar sounds.
-- Index in **LanceDB** (one dataset per rights space), benchmarked against pgvector.
+- Vector index (LanceDB or `sqlite-vec`, one dataset per rights space), chosen by benchmark.
 - **Search**: by text ("heavy metal door, slow, reverberant, interior") and **by similar
   sound**; filters (category, origin, format, duration, quality).
 - **Triage**: uncertain predictions first, one key to confirm or correct (active learning).
