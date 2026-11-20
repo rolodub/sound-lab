@@ -32,6 +32,10 @@ measurement; nothing modifies the original files.
 
 - Schema: `assets`, `clips`, `labels` (with history), `folders`, `analyses`, `embeddings`,
   `jobs`, `exports` in the SQLite database (WAL); the phase 0 catalog is imported.
+- **Readers for what phase 0 could not read** (inventory 2026-11-20): **Pyramix `.pmf`**
+  (22,483 files, 207 GB — confirmed Pyramix media); Sound Designer II data forks without their
+  resource fork (`.L/.R/.M/.S`, ~2,800 files: raw PCM, format set per library and checked by
+  ear); names with `:` or a trailing space (694 files: NFS read-only export for the tower).
 - **Backups**: the tower's Sound Lab data to S3 (restic, nightly), labels also exported as
   plain files.
 - **Front door on infra-vm**: TLS, sign-in, static front end, wake-on-open of the tower,
