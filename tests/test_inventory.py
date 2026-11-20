@@ -226,3 +226,68 @@ def test_afp_encoded_hidden_names_are_skipped(tmp_path):
     (tmp_path / ":2eAppleDouble" / "a.wav").write_bytes(b"x")
     (tmp_path / "AK401:01 TV Foot.L").write_bytes(b"x")
     assert sorted(r for r, _, _ in walk(str(tmp_path))) == ["AK401:01 TV Foot.L"]
+
+
+def pmf(tracks: list[bytes], rate=48000, bits=24, block=65535) -> bytes:
+    """A minimal Pyramix compound file: interleaved blocks, block tables, MH_, directory."""
+    w = bits // 8
+    frames = len(tracks[0]) // w
+    body, tables = bytearray(), {}
+    chunks = [[t[i:i + block] for i in range(0, len(t), block)] for t in tracks]
+    for i in range(max(map(len, chunks))):
+        for n, c in enumerate(chunks):
+            if i < len(c):
+                tables.setdefault(f"A_{n}", []).append((len(body), len(c[i])))
+                body += c[i].ljust(block, b"\0")
+    mh = bytearray(0x4B8)
+    struct.pack_into("<II", mh, 0x490, rate, bits)
+    struct.pack_into("<Q", mh, 0x4A8, frames)
+    tables["MH_"] = [(len(body), len(mh))]
+    body += mh
+    streams = {n: sum(u for _, u in b) for n, b in tables.items()}
+    table_at = {}
+    for n, b in tables.items():
+        table_at[n] = len(body)
+        raw = bytearray()
+        for k, (off, used) in enumerate(b):
+            raw += struct.pack("<IIII", len(b) if k == 0 else 0, off & 0xFFFFFFFF, off >> 32, used)
+        body += raw
+    for n in tables:
+        e = bytearray(0x268)
+        struct.pack_into("<I", e, 0, 11)
+        e[4:4 + 2 * len(n)] = n.encode("utf-16-le")
+        struct.pack_into("<QQ", e, 4 + 0x218, streams[n], table_at[n])
+        body += e
+    return bytes(body)
+
+
+def test_pyramix_pmf(tmp_path):
+    from soundlab import pyramix
+    left = b"".join((i * 7).to_bytes(3, "little", signed=True) for i in range(50000))
+    right = b"".join((-i * 5).to_bytes(3, "little", signed=True) for i in range(50000))
+    p = tmp_path / "Avion MS.pmf"
+    p.write_bytes(pmf([left, right]))
+    info = headers.read_headers(str(p))
+    assert (info["sample_rate"], info["bits"], info["channels"], info["frames"]) == (48000, 24, 2, 50000)
+    out = tmp_path / "out.wav"
+    pyramix.to_wav(str(p), str(out))
+    with open(out, "rb") as f:
+        w = headers.read_wav(f)
+    assert (w["channels"], w["bits"], w["frames"]) == (2, 24, 50000)
+    raw = out.read_bytes()
+    data = raw[raw.index(b"data") + 8:]
+    assert data[:6] == left[:3] + right[:3] and data[-6:] == left[-3:] + right[-3:]
+    assert data[6 * 21845:6 * 21846] == left[3 * 21845:3 * 21846] + right[3 * 21845:3 * 21846]   # across a block join
+
+
+def test_pmf_found_by_the_inventory_after_reclassification(tmp_path):
+    root = tmp_path / "SonoFilms"
+    root.mkdir()
+    (root / "a.pmf").write_bytes(pmf([b"\1\0\0" * 1000]))
+    cat = str(tmp_path / "c.sqlite")
+    inventory.run([str(root)], cat, workers=1)
+    db = sqlite3.connect(cat)
+    db.execute("UPDATE files SET kind = 'other', channels = NULL")      # as filed before .pmf was known
+    db.commit()
+    inventory.run([str(root)], cat, workers=1)
+    assert db.execute("SELECT kind, channels FROM files").fetchall() == [("audio", 1)]

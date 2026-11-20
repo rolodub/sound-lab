@@ -176,6 +176,12 @@ def read_headers(path: str) -> dict:
                 return read_aiff(f)
         except HeaderError:
             pass
+    elif low.endswith(".pmf"):                          # Pyramix media (not readable by ffprobe)
+        from .pyramix import PmfError, read_pmf
+        try:
+            return read_pmf(path)
+        except PmfError as e:
+            raise HeaderError(f"Pyramix: {e}") from e
     elif low.endswith(".sd2"):                          # data fork = raw PCM, format in the resource fork
         import os
         info = read_unknown(path, os.path.getsize(path))

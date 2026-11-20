@@ -1,5 +1,6 @@
 """python -m soundlab inventory --root DIR [--root DIR ...] --catalog FILE
-python -m soundlab report --catalog FILE"""
+python -m soundlab report --catalog FILE
+python -m soundlab pmf2wav IN.pmf OUT.wav   (Pyramix media to WAV, same rate, bits and tracks)"""
 import argparse
 import logging
 import sys
@@ -17,11 +18,18 @@ def main(argv=None) -> int:
     rep = sub.add_parser("report", help="Markdown report from the catalog")
     rep.add_argument("--catalog", required=True)
     rep.add_argument("--top", type=int, default=25)
+    pw = sub.add_parser("pmf2wav", help="convert a Pyramix .pmf to WAV (the original is only read)")
+    pw.add_argument("src")
+    pw.add_argument("dst")
     a = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stderr)
     if a.cmd == "inventory":
         totals = inventory.run(a.root, a.catalog, workers=a.workers)
         logging.info("done: %s", totals)
+    elif a.cmd == "pmf2wav":
+        from .pyramix import to_wav
+        info = to_wav(a.src, a.dst)
+        logging.info("written %s: %s", a.dst, info)
     else:
         print(report.build(a.catalog, a.top))
     return 0

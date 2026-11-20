@@ -18,7 +18,7 @@ from .headers import CHANNEL_SUFFIX, HeaderError, read_headers, read_unknown
 
 log = logging.getLogger("soundlab.inventory")
 
-AUDIO = {".wav", ".bwf", ".rf64", ".w64", ".aif", ".aiff", ".aifc", ".sd2", ".mp3", ".flac", ".ogg", ".oga", ".opus",
+AUDIO = {".wav", ".bwf", ".rf64", ".w64", ".aif", ".aiff", ".aifc", ".sd2", ".pmf", ".mp3", ".flac", ".ogg", ".oga", ".opus",
          ".m4a", ".aac", ".wma", ".caf", ".ac3", ".dts", ".mka", ".ape", ".wv", ".au", ".snd"}
 VIDEO = {".mov", ".mp4", ".m4v", ".mxf", ".avi", ".mkv", ".mpg", ".mpeg", ".mts", ".m2ts", ".wmv", ".dv", ".webm"}
 # Editing sessions and exchange files: the potential examples of spotting (phase 4).
@@ -194,8 +194,10 @@ def run(roots: list[str], catalog: str, workers: int = 8, progress_every: int = 
         name = os.path.basename(root.rstrip("/"))
         run_id = db.execute("INSERT INTO runs (root, started_at) VALUES (?, ?)", (name, time.time())).lastrowid
         # Files that failed last time (e.g. the share dropped for a moment) are read again.
-        known = {r: (s, m, e) for r, s, m, e in db.execute("SELECT relpath, size, mtime, error FROM files WHERE root = ?",
-                                                             (name,))}
+        # ... and so are files filed as "other" whose extension is now known (e.g. .pmf, added later).
+        known = {r: (s, m, e if not (k == "other" and kind_of(os.path.splitext(r)[1].lower()) != "other") else "reclassify")
+                 for r, s, m, e, k in db.execute("SELECT relpath, size, mtime, error, kind FROM files WHERE root = ?",
+                                                 (name,))}
         todo, seen = [], 0
         present = set()
         walk_errors: list = []
