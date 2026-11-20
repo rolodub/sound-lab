@@ -61,6 +61,14 @@ COLUMNS = ("container", "codec", "sample_rate", "bits", "channels", "frames", "d
            "ixml_note", "ixml_circled", "ixml_file_uid", "channel_suffix", "sniffed")
 
 
+INT64 = 2 ** 63 - 1
+
+
+def _fit(v):
+    """A corrupt header can hold a number SQLite cannot store: kept empty instead of failing the run."""
+    return None if isinstance(v, int) and not -INT64 - 1 <= v <= INT64 else v
+
+
 def kind_of(ext: str) -> str:
     if ext in AUDIO:
         return "audio"
@@ -192,13 +200,18 @@ def run(roots: list[str], catalog: str, workers: int = 8, progress_every: int = 
         log.info("%s: %d files, %d to read", name, seen, len(todo))
         read = errors = 0
         with ThreadPoolExecutor(workers) as pool:
+            sql = (f"INSERT OR REPLACE INTO files (root, relpath, folder, ext, kind, size, mtime, quick_id, "
+                   f"{', '.join(COLUMNS)}, error, scanned_at) VALUES ({', '.join('?' * (len(COLUMNS) + 10))})")
             for i, res in enumerate(pool.map(lambda t: examine(root, *t), todo), 1):
-                values = [res.info.get(c) for c in COLUMNS]
+                values = [_fit(res.info.get(c)) for c in COLUMNS]
                 values[COLUMNS.index("has_ixml")] = 1 if res.info.get("has_ixml") else 0
-                db.execute(f"INSERT OR REPLACE INTO files (root, relpath, folder, ext, kind, size, mtime, quick_id, "
-                           f"{', '.join(COLUMNS)}, error, scanned_at) VALUES ({', '.join('?' * (len(COLUMNS) + 10))})",
-                           [name, res.relpath, os.path.dirname(res.relpath), res.ext, res.kind, res.size, res.mtime,
-                            res.qid, *values, res.error, time.time()])
+                head = [name, res.relpath, os.path.dirname(res.relpath), res.ext, res.kind, res.size, res.mtime, res.qid]
+                try:
+                    db.execute(sql, [*head, *values, res.error, time.time()])
+                except (sqlite3.Error, OverflowError, ValueError) as e:     # one bad row never stops the run
+                    log.warning("cannot record %s: %s", res.relpath, e)
+                    res.error = f"record: {e}"[:300]
+                    db.execute(sql, [*head, *[None] * len(COLUMNS), res.error, time.time()])
                 read += 1
                 errors += bool(res.error)
                 if i % progress_every == 0:
