@@ -176,14 +176,17 @@ def run(roots: list[str], catalog: str, workers: int = 8, progress_every: int = 
         root = os.path.abspath(root)
         name = os.path.basename(root.rstrip("/"))
         run_id = db.execute("INSERT INTO runs (root, started_at) VALUES (?, ?)", (name, time.time())).lastrowid
-        known = {r: (s, m) for r, s, m in db.execute("SELECT relpath, size, mtime FROM files WHERE root = ?", (name,))}
+        # Files that failed last time (e.g. the share dropped for a moment) are read again.
+        known = {r: (s, m, e) for r, s, m, e in db.execute("SELECT relpath, size, mtime, error FROM files WHERE root = ?",
+                                                             (name,))}
         todo, seen = [], 0
         present = set()
         walk_errors: list = []
         for relpath, size, mtime in walk(root, walk_errors):
             seen += 1
             present.add(relpath)
-            if known.get(relpath) == (size, mtime):
+            k = known.get(relpath)
+            if k and k[:2] == (size, mtime) and k[2] is None:
                 continue
             todo.append((relpath, size, mtime))
         log.info("%s: %d files, %d to read", name, seen, len(todo))
